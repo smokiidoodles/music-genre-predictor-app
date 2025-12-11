@@ -38,6 +38,8 @@ dump(le, "label_encoder.joblib", compress=3)
 
 
 # Features and target
+value_to_drop = 'world-music'
+data = data.drop(data[data['track_genre'] == value_to_drop].index)
 X = data.drop(columns=['track_genre', 'track_genre_encoded'])
 X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
 y = data['track_genre_encoded']
