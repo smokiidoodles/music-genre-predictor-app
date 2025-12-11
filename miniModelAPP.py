@@ -34,9 +34,6 @@ pickle.dump(le,open("label_encoder.pkl", "wb"))
 # Save the LabelEncoder
 dump(le, "label_encoder.joblib", compress=3)
 
-
-
-
 # Features and target
 value_to_drop = 'world-music'
 data = data.drop(data[data['track_genre'] == value_to_drop].index)
@@ -44,15 +41,26 @@ X = data.drop(columns=['track_genre', 'track_genre_encoded'])
 X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
 y = data['track_genre_encoded']
 
-# ---------------------------
-# SAMPLING (20% stratified sample)
-X_sample, _, y_sample, _ = train_test_split(X, y, train_size=0.40, stratify=y)
-X = X_sample
-y = y_sample
+# -----------------------------------------------------
+# 2. PROPORTIONAL STRATIFIED SAMPLING
+# -----------------------------------------------------
+frac = 0.20     # keep 20% of rows per genre
+
+sampled_data = data.groupby('track_genre_encoded', group_keys=False).apply(
+    lambda x: x.sample(frac=frac)
+).reset_index(drop=True)
+
+print("Original size:", len(data))
+print("Sampled size:", len(sampled_data))
 # ---------------------------
 
-# Train-test split
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+# -----------------------------------------------------
+# 4. TRAIN / TEST SPLIT with STRATIFICATION
+# -----------------------------------------------------
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y
+)
+
 
 #Model Testing Begins Below
 clf = RandomForestClassifier(
