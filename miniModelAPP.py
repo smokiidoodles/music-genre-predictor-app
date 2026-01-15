@@ -1,154 +1,138 @@
+
+
 """
 miniModelAPP.py
 
-This script trains multiple classification models (Random Forest, GaussianNB, Decision Tree)
-on a sampled subset of the music genre dataset. It then creates an ensemble VotingClassifier
-and saves both the trained model and the label encoder for deployment in a Streamlit app.
+Trains an ensemble classifier to predict music genre (4 classes)
+and saves:
+- trained model
+- label encoder
+- feature column list
 """
 
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_validate, ShuffleSplit
-from sklearn.metrics import accuracy_score, precision_score, make_scorer
-from sklearn.preprocessing import LabelEncoder
+from sklearn.metrics import accuracy_score, precision_score, make_scorer, balanced_accuracy_score
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier, VotingClassifier
-from sklearn.naive_bayes import GaussianNB
+from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
 from joblib import dump
 
-
+# -------------------------------------------------
 # Load dataset
-# -------------------------
-data = pd.read_csv("dataset_copy.csv")
+# -------------------------------------------------
+data = pd.read_csv("dataset_copy.csv", index_col=0)
 
-
-# -------------------------
-# Data for Reccomendations
-# -------------------------
+# -------------------------------------------------
+# Save reference songs for recommendations
+# -------------------------------------------------
 recommend_df = data[[
     'track_name', 'artists', 'popularity', 'danceability', 'energy',
     'acousticness', 'instrumentalness', 'liveness', 'valence', 'tempo'
 ]]
-
-# Save for use in Streamlit
 recommend_df.to_csv("song_reference.csv", index=False)
 
-# -------------------------
-# Data for Training
-# -------------------------
-
-# Removed irrelevant columns
+# -------------------------------------------------
+# Drop non-feature columns
+# -------------------------------------------------
 non_featured_cols = [
-    'track_name', 'track_id', 'explicit', 'artists', 'key', 'album_name',
-    'mode', 'speechiness', 'time_signature', 'loudness', 'duration_ms'
+    'track_name','track_id','explicit','artists','key',
+    'album_name','mode','time_signature'
 ]
-data = data.drop(non_featured_cols, axis=1)
+data = data.drop(columns=non_featured_cols, errors='ignore')
 
-# -------------------------
-# Processed target column
-# -------------------------
+# -------------------------------------------------
+# Process track_genre
+# -------------------------------------------------
+data['track_genre'] = data['track_genre'].apply(
+    lambda x: x[0] if isinstance(x, list) else x
+)
+data['track_genre'] = data['track_genre'].fillna('unknown').str.lower().str.strip()
 
-# Flatten track_genre if stored as a list
-data['track_genre'] = data['track_genre'].apply(lambda x: x[0] if isinstance(x, list) else x)
-data['track_genre'] = data['track_genre'].fillna('unknown').str.strip().str.lower()
+# -------------------------------------------------
+# Collapse to 4 genres
+# -------------------------------------------------
+def map_genre_4(g):
+    if any(k in g for k in ['pop','k-pop','j-pop','c-pop','electro']):
+        return 'pop'
+    if any(k in g for k in ['rock','alt','indie','garage','classic','metal']):
+        return 'rock'
+    if any(k in g for k in ['hip hop','rap','trap']):
+        return 'hiphop'
+    if any(k in g for k in ['jazz','blues','r&b','soul','ambient','classical','chill']):
+        return 'jazz_soothing'
+    return None
 
-# Encode genre
+data['genre_grouped'] = data['track_genre'].apply(map_genre_4)
+data = data.dropna(subset=['genre_grouped'])
+
+# -------------------------------------------------
+# Encode target
+# -------------------------------------------------
 le = LabelEncoder()
-data['track_genre_encoded'] = le.fit_transform(data['track_genre'])
+data['genre_encoded'] = le.fit_transform(data['genre_grouped'])
 
-# Saved label encoder for deployment
-dump(le, "label_encoder.joblib", compress=3)
+# -------------------------------------------------
+# Features & Target
+# -------------------------------------------------
+X = data.drop(columns=['track_genre','genre_grouped','genre_encoded'])
+X = X.apply(pd.to_numeric, errors='coerce').fillna(0)
+y = data['genre_encoded']
 
-# Removed unwanted genres
-data = data[data['track_genre'] != 'world-music']
+# -------------------------------------------------
+# Feature Engineering
+# -------------------------------------------------
+X['energy_acoustic_ratio'] = X['energy'] / (X['acousticness'] + 1e-5)
+X['loud_instr'] = X['loudness'] * X['instrumentalness']
+X['tempo_bin'] = pd.cut(X['tempo'], bins=3, labels=[0,1,2])
+X['duration_bin'] = pd.cut(X['duration_ms'], bins=3, labels=[0,1,2])
 
-# -------------------------
-# Proportional stratified sampling (reduce dataset size)
-# -------------------------
-sample_frac = 0.10  # 10% of each genre
-sampled_data = data.groupby('track_genre_encoded', group_keys=False).apply(
-    lambda x: x.sample(frac=sample_frac)
-).reset_index(drop=True)
-
-print(f"Original size: {len(data)}, Sampled size: {len(sampled_data)}")
-
-X = sampled_data.drop(columns=['track_genre', 'track_genre_encoded'])
-y = sampled_data['track_genre_encoded']
-
-# -------------------------
-# Train/test split with stratification
-# -------------------------
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, stratify=y)
-
-# -------------------------
-# Initialization of classifiers
-# -------------------------
-rf = RandomForestClassifier(n_estimators=50, max_depth=50, class_weight="balanced")
-gnb = GaussianNB()
-dt = DecisionTreeClassifier()
-
-# Train Random Forest
-rf.fit(X_train, y_train)
-y_pred_rf = rf.predict(X_test)
-
-# -------------------------
-# Cross-validation setup
-# -------------------------
-cv = ShuffleSplit(n_splits=5, test_size=0.2)
-
-# Random Forest
-rf_scores = cross_validate(
-    rf, X, y, cv=5,
-    scoring={
-        'accuracy': make_scorer(accuracy_score),
-        'precision': make_scorer(precision_score, average='weighted')
-    }
+# -------------------------------------------------
+# Train / Test split
+# -------------------------------------------------
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, stratify=y
 )
-print("Random Forest - Accuracy:", np.mean(rf_scores['test_accuracy']))
-print("Random Forest - Precision:", np.mean(rf_scores['test_precision']))
 
-# GaussianNB
-gnb_scores = cross_validate(
-    gnb, X, y, cv=5,
-    scoring={
-        'accuracy': make_scorer(accuracy_score),
-        'precision': make_scorer(precision_score, average='weighted')
-    }
+# -------------------------------------------------
+# Scaling (needed for KNN)
+# -------------------------------------------------
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)
+X_test_scaled = scaler.transform(X_test)
+
+# -------------------------------------------------
+# Models
+# -------------------------------------------------
+rf = RandomForestClassifier(
+    n_estimators=500,
+    max_depth=40,
+    min_samples_leaf=3,
+    class_weight='balanced'
 )
-print("GaussianNB - Accuracy:", np.mean(gnb_scores['test_accuracy']))
-print("GaussianNB - Precision:", np.mean(gnb_scores['test_precision']))
 
-# Decision Tree
-dt_scores = cross_validate(
-    dt, X, y, cv=5,
-    scoring={
-        'accuracy': make_scorer(accuracy_score),
-        'precision': make_scorer(precision_score, average='weighted')
-    }
+dt = DecisionTreeClassifier(class_weight='balanced')
+knn = KNeighborsClassifier(n_neighbors=7)
+
+# -------------------------------------------------
+# Ensemble
+# -------------------------------------------------
+ensemble = VotingClassifier(
+    estimators=[('RF', rf), ('DT', dt), ('KNN', knn)],
+    voting='soft'
 )
-print("Decision Tree - Accuracy:", np.mean(dt_scores['test_accuracy']))
-print("Decision Tree - Precision:", np.mean(dt_scores['test_precision']))
 
-# -------------------------
-# Ensemble: Voting Classifier (soft)
-# -------------------------
-ensemble = VotingClassifier(estimators=[('RF', rf), ('GNB', gnb), ('DT', dt)], voting='soft')
-ensemble.fit(X, y)
+ensemble.fit(X_train_scaled, y_train)
 
-# Save ensemble model
+# -------------------------------------------------
+# Save artifacts
+# -------------------------------------------------
 dump(ensemble, "model.joblib", compress=5)
+dump(le, "label_encoder.joblib", compress=3)
+dump(X.columns.tolist(), "feature_columns.joblib", compress=3)
+dump(scaler, "scaler.joblib", compress=3)
 
-# Ensemble cross-validation
-ensemble_scores_acc = cross_validate(ensemble, X, y, cv=cv, scoring='accuracy')
-ensemble_scores_prec = cross_validate(ensemble, X, y, cv=cv, scoring='precision_macro')
 
-print("\nEnsemble - Accuracy mean:", np.mean(ensemble_scores_acc['test_score']))
-print("Ensemble - Precision mean:", np.mean(ensemble_scores_prec['test_score']))
 
-# Print first 10 ensemble predictions
-y_pred_ensemble = ensemble.predict(X_test)
-print("\nFIRST 10 ENSEMBLE PREDICTIONS:")
-for i in range(10):
-    true_label = le.inverse_transform([y_test.iloc[i]])[0]
-    pred_label = le.inverse_transform([y_pred_ensemble[i]])[0]
-    print(f"Sample {i+1}: True = {true_label} | Predicted = {pred_label}")

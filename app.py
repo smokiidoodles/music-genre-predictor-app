@@ -4,80 +4,90 @@ app.py
 Streamlit application to predict music genre using a pre-trained ensemble model.
 All inputs are sliders representing realistic ranges of audio features.
 """
+
 import streamlit as st
 import pandas as pd
 import numpy as np
-import random
 from joblib import load
 
-# -------------------------
-# Load model and label encoder
-# -------------------------
+# -------------------------------------------------
+# Load artifacts
+# -------------------------------------------------
 model = load("model.joblib")
 le = load("label_encoder.joblib")
+FEATURE_COLUMNS = load("feature_columns.joblib")
+scaler = load("scaler.joblib")
 
-# -------------------------
-# Feature names used in training
-# -------------------------
-feature_names = [
-    'Unnamed: 0', 'popularity', 'danceability', 'energy',
-    'acousticness', 'instrumentalness', 'liveness', 'valence', 'tempo'
-]
-
-# -------------------------
-# Load reference songs for recommendations
-# -------------------------
 song_ref = pd.read_csv("song_reference.csv")
-feature_cols = ['popularity','danceability','energy','acousticness',
+
+# -------------------------------------------------
+# UI
+# -------------------------------------------------
+st.title("🎵 Music Genre Predictor")
+
+st.write("Adjust the audio features:")
+
+popularity = st.slider("Popularity", 0, 100, 50)
+danceability = st.slider("Danceability", 0.0, 1.0, 0.5)
+energy = st.slider("Energy", 0.0, 1.0, 0.5)
+acousticness = st.slider("Acousticness", 0.0, 1.0, 0.1)
+instrumentalness = st.slider("Instrumentalness", 0.0, 1.0, 0.0)
+liveness = st.slider("Liveness", 0.0, 1.0, 0.1)
+valence = st.slider("Valence", 0.0, 1.0, 0.5)
+tempo = st.slider("Tempo (BPM)", 60, 200, 120)
+
+# -------------------------------------------------
+# Hidden defaults (NOT shown to user)
+# -------------------------------------------------
+loudness = -8.0
+duration_ms = 180000
+speechiness = 0.05
+
+# -------------------------------------------------
+# Build input
+# -------------------------------------------------
+input_df = pd.DataFrame([{
+    'popularity': popularity,
+    'danceability': danceability,
+    'energy': energy,
+    'acousticness': acousticness,
+    'instrumentalness': instrumentalness,
+    'liveness': liveness,
+    'valence': valence,
+    'tempo': tempo,
+    'loudness': loudness,
+    'duration_ms': duration_ms,
+    'speechiness': speechiness
+}])
+
+# Feature engineering
+input_df['energy_acoustic_ratio'] = input_df['energy'] / (input_df['acousticness'] + 1e-5)
+input_df['loud_instr'] = input_df['loudness'] * input_df['instrumentalness']
+input_df['tempo_bin'] = pd.cut(input_df['tempo'], bins=3, labels=[0,1,2])
+input_df['duration_bin'] = pd.cut(input_df['duration_ms'], bins=3, labels=[0,1,2])
+
+# Reorder columns
+input_df = input_df[FEATURE_COLUMNS]
+
+# Scale
+input_scaled = scaler.transform(input_df)
+
+
+
+# -------------------------------------------------
+# Recommendations
+# -------------------------------------------------
+if st.button("Recommend Similar Songs"):
+    user_vec = np.array([[popularity, danceability, energy,
+                           acousticness, instrumentalness,
+                           liveness, valence, tempo]])
+
+    features = ['popularity','danceability','energy','acousticness',
                 'instrumentalness','liveness','valence','tempo']
 
-# -------------------------
-# App UI
-# -------------------------
-st.title("🎵 Music Genre Predictor & Recommender")
-st.write("Enter audio features below:")
-
-# Random ID
-unnamed_0 = random.randint(0, 11200)
-
-# Input sliders
-popularity = st.slider("Popularity", 0, 100, 50)
-danceability = st.slider("Danceability", 0.0, 1.0, 0.5, 0.01)
-energy = st.slider("Energy", 0.0, 1.0, 0.5, 0.01)
-acousticness = st.slider("Acousticness", 0.0, 0.01, 0.0005, 0.000001, format="%.8f")
-instrumentalness = st.slider("Instrumentalness", 0.0, 1.0, 0.0, 0.000001, format="%.8f")
-liveness = st.slider("Liveness", 0.01, 0.9, 0.05, 0.01, format="%.4f")
-valence = st.slider("Valence", 0.0, 1.0, 0.5, 0.01)
-tempo = st.slider("Tempo (BPM)", 60, 200, 120, 1)
-
-# Build input dataframe
-input_data = pd.DataFrame([[
-    unnamed_0, popularity, danceability, energy,
-    acousticness, instrumentalness, liveness, valence, tempo
-]], columns=feature_names)
-
-# -------------------------
-# Predict Genre Button
-# -------------------------
-if st.button("Predict Genre"):
-    pred_class = model.predict(input_data)[0]
-    genre = le.inverse_transform([pred_class])[0]
-    st.success(f"🎧 Predicted Genre: {genre}")
-
-# -------------------------
-# Recommend Songs Button
-# -------------------------
-if st.button("Recommend Songs"):
-    # Build feature array for comparison (exclude ID)
-    user_features = np.array([[popularity, danceability, energy,
-                               acousticness, instrumentalness,
-                               liveness, valence, tempo]])
-
-    # Compute Euclidean distance
-    distances = np.linalg.norm(song_ref[feature_cols].values - user_features, axis=1)
+    distances = np.linalg.norm(song_ref[features].values - user_vec, axis=1)
     song_ref['distance'] = distances
 
-    # Get top 5 closest songs
-    top_songs = song_ref.nsmallest(5, 'distance')[['track_name','artists']]
+    top = song_ref.nsmallest(5, 'distance')[['track_name','artists']]
     st.subheader("🎵 Recommended Songs")
-    st.table(top_songs)
+    st.table(top)
